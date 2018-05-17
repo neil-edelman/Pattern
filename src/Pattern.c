@@ -2,55 +2,29 @@
  see readme.txt, or \url{ https://opensource.org/licenses/MIT }.
 
  Regular expression pattern, \cite{Thompson1968Regular}, Cox2007
- \url{ https://swtch.com/~rsc/regexp/regexp1.html }. We don't take exactly the
- same approach. (I think?)
+ \url{ https://swtch.com/~rsc/regexp/regexp1.html }
  \url{ http://users.pja.edu.pl/~jms/qnx/help/watcom/wd/regexp.html }
  \url{ http://www.cs.sfu.ca/~cameron/Teaching/384/99-3/regexp-plg.html }
  \url{ http://matt.might.net/articles/parsing-regex-with-recursive-descent/ }.
-
- <re> ::= <term> '|' <re> | <term>
- <term> ::= { <factor> }
- <factor> ::= <atom> <repeat> | <atom> | '^' | '$'
- <repeat> ::= '*' | '+' | '?' | '{' <number> [ ',' [ <number> ] ] '}'
- <atom> ::= <char> | '\' <char> | '(' <re> ')'
-
- <re> ::= <nestnch> | <piece>
- <nestnch> ::= <re> "|" <piece>
- <piece> ::= <concatenation> | <expression>
- <concatenation> ::= <piece> <expression>
- <expression> ::= <star> | <plus> | <atom>
- <star> ::=	<atom> "*"
- <plus> ::=	<atom> "+"
- <atom> ::= <group> | <any> | <bos> | <eos> | <char> | <set>
- <group> ::= "(" <re> ")"
- <any> ::= "."
- <bos> ::= "^"
- <eos> ::= "$"
- <char> ::= any non metacharacter | "\" metacharacter
- <set> ::= <positive-set> | <negative-set>
- <positive-set> ::= "[" <set-items> "]"
- <negative-set> ::= "[^" <set-items> "]"
- <set-items> ::= <set-item> | <set-item> <set-items>
- <set-items> ::= <range> | <char>
- <range> ::= <char> "-" <char>
 
  @title		Pattern
  @author	Neil
  @std		C89 with C99 stdint.h
  @version	2018-04
  @since
- 2018-04 Conglomerated into {Pattern}. */
+ 2018-04 Conglomerated into {Pattern}.
+ @fixme @url{
+ https://en.wikipedia.org/wiki/Knuth%E2%80%93Morris%E2%80%93Pratt_algorithm } */
 
-/*#include <stddef.h>*/	/* ptrdiff_t offset_of */
-/*#include <stdlib.h>*/ /* malloc realloc free */
+#include <stddef.h> /* offsetof */
+#include <stdlib.h> /* malloc free */
 #include <stdlib.h> /* EXIT_ rand */
 #include <stdio.h>  /* fprintf */
 #include <string.h> /* memcmp strcmp strlen memmove memcpy memchr */
 #include <errno.h>  /* errno */
 #include <assert.h> /* assert */
 #include <ctype.h>  /* isspace */
-#include <stdarg.h> /* va_* */
-#include <stdint.h> /* C99 uint32_t */
+#include <stdint.h> /* C99 uint32_t: This is C89, but one must have uint32_t. */
 #include "Pattern.h"
 
 /* Pre-define these constants. */
@@ -165,7 +139,7 @@ struct Literals {
 	char *text;
 	size_t text_size;
 };
-/** {container_of} (probably does nothing.) */
+/** {container_of} (probably does nothing exept {reinterpet_cast}.) */
 static const struct Literals *literals_holds_transition(const struct
 	Transition *const t) {
 	return (const struct Literals *)(const void *)
@@ -369,7 +343,7 @@ static int match_here(const struct MachineVertex *const root,
 /** Match {re} by performing a DFS in-order search on each character.
  @param re, arg: If null, returns null.
  @return The first point it matches or null if it doesn't. */
-const char *PatternMatch(const struct Pattern *const re, const char *const arg) {
+const char *PatternMatch(const struct Pattern *const re, const char *const arg){
 	const struct MachineVertex *root;
 	const char *a;
 	if(!re || !arg) return 0;
@@ -401,22 +375,22 @@ int PatternOut(const struct Pattern *const re, FILE *const fp) {
 /**
  * Temporary nesting for compiling. Refers to index in the vertices pool.
  */
-struct Nest { size_t v0i, v2i; const char *arg; };
+struct Nest { size_t v0i, vi, v1i; };
 #define POOL_NAME Nest
 #define POOL_TYPE struct Nest
 #define POOL_STACK
 #include "Pool.h"
 /** Private constructor.
  @param nest: A {NestPool}. Required.
- @param a: An already existing vertex index to use as the opening.
+ @param v0i: Vertex index in pool that serves as the root. Required.
  @return Creates a new Nest or null.
  @throws {realloc} errors. */
 static struct Nest *Nest(struct NestPool *const nest, const size_t v0i) {
 	struct Nest *n;
 	assert(nest);
 	if(!(n = NestPoolNew(nest))) return 0;
-	n->v0i = v0i;
-	n->v2i = (size_t)-1; /* By agreed upon convention, this is null. */
+	n->v0i = n->vi = v0i;
+	n->v1i = (size_t)-1; /* By agreed upon convention, this is null. */
 	return n;
 }
 
@@ -425,14 +399,14 @@ struct Make;
 typedef void (*MakeContext)(struct Make *const);
 
 /**
- * Temporary structure called on compiling regular expressions into DFAs. All
- * wrapped up one one object for convenience.
+ * Temporary structure called on compiling regular expressions into NFAs. All
+ * wrapped up one one object for convenience, and contains {nests}.
  */
 struct Make {
-	struct Pattern *re;
+	struct Pattern *p;
 	struct NestPool nests;
 	MakeContext context;
-	const char *c_from, *c;
+	const char *from, *cursor;
 	enum {
 		DONE = 1,
 		ERRNO = 2,
@@ -448,24 +422,6 @@ struct Make {
 static void normal_context(struct Make *const make);
 static void escape_context(struct Make *const make);
 
-/** Private initialiser. */
-static int Make(struct Make *const make,
-	struct Pattern *const re, const char *const compile) {
-	struct MachineVertexLink *start;
-	assert(make && re && compile && !MachineDigraphGetRoot(&re->graph));
-	make->re = re;
-	NestPool(&make->nests);
-	make->context = &normal_context;
-	make->c_from = 0;
-	make->c = compile;
-	make->status = 0;
-	/* Set up starting state: implied parenthesis around all. */
-	if(!(start = VertexPoolNew(&make->re->vs))) return 0;
-	MachineDigraphPutVertex(&make->re->graph, &start->data);
-	if(!Nest(&make->nests, VertexPoolIndex(&make->re->vs, start))) return 0;
-	return 1;
-}
-
 /** Private destructor. */
 static void Make_(struct Make *const make) {
 	assert(make);
@@ -473,16 +429,36 @@ static void Make_(struct Make *const make) {
 	make->context = 0;
 }
 
+/** Private initialiser. */
+static int Make(struct Make *const make,
+	struct Pattern *const p, const char *const compile) {
+	struct MachineVertexLink *start;
+	assert(make && p && compile && !MachineDigraphGetRoot(&p->graph));
+	make->p = p;
+	NestPool(&make->nests);
+	make->context = &normal_context;
+	make->from = 0;
+	make->cursor = compile;
+	make->status = 0;
+	/* Set up starting state: implied parenthesis around all. */
+	if(!(start = VertexPoolNew(&make->p->vs))
+		|| !Nest(&make->nests, VertexPoolIndex(&make->p->vs, start)))
+		return Make_(make), 0;
+	MachineDigraphPutVertex(&make->p->graph, &start->data);
+	return 1;
+}
+
 /** .|\ (capturing group, nah) (lazy ? eh) (lookarounds, meh)
  @implements MakeContext */
 static void normal_context(struct Make *const make) {
-	assert(make && !make->status && NestPoolPeek(&make->nests) && make->c);
-	printf("normal_context: %c (0x%x.)\n", *make->c, (unsigned)*make->c);
-	switch(*make->c) {
+	assert(make && !make->status && NestPoolPeek(&make->nests));
+	printf("normal_context: %c (0x%x.)\n",
+		*make->cursor, (unsigned)*make->cursor);
+	switch(*make->cursor) {
 	case '\\': make->context = &escape_context; break;
 	case '|': make->status |= BRANCH; break;
 	case '(': make->status |= OPEN; break;
-	case ')': make->status |= CLOSE; break;
+	case ')': make->status |= CLOSE | BRANCH; break;
 	case '*':
 	case '+':
 	case '?':
@@ -491,7 +467,7 @@ static void normal_context(struct Make *const make) {
 	case '{':
 	case '}': break; /* @fixme Not implemented. */
 	case '\0': make->status |= DONE, make->context = 0; break;
-	default: if(!make->c_from) make->c_from = make->c; break; /*Start literal.*/
+	default: if(!make->from) make->from = make->cursor; break;/*Start literal.*/
 	}
 }
 
@@ -499,11 +475,12 @@ static void normal_context(struct Make *const make) {
  \D \W \S \N(not a line break)
  @implements MakeContext */
 static void escape_context(struct Make *const make) {
-	assert(make && !make->status && NestPoolPeek(&make->nests) && make->c);
-	printf("escape_context: %c (0x%x.)\n", *make->c, (unsigned)*make->c);
-	switch(*make->c) {
+	assert(make && !make->status && NestPoolPeek(&make->nests));
+	printf("escape_context: %c (0x%x.)\n",
+		*make->cursor, (unsigned)*make->cursor);
+	switch(*make->cursor) {
 		case '\0': make->status |= SYNTAX, make->context = 0; return;
-		default: if(!make->c_from) make->c_from = make->c; break;
+		default: if(!make->from) make->from = make->cursor; break;
 	}
 	make->context = &normal_context;
 }
@@ -532,68 +509,73 @@ static enum MakeStatus brackets_context(struct Make *const make) {
  \see{Pattern}.
  @return Success, otherwise {errno} will (probably) be set; it always
  initialises {re}. */
-static int compile_re(struct Pattern *re, const char *const compile) {
+static int compile_re(struct Pattern *p, const char *const compile) {
 	struct Make make;
 	struct Nest *n;
-	size_t v1i = 0;
-	assert(re && compile);
+	assert(p && compile);
 	printf("compile_re: <%s>.\n", compile);
-	if(!Make(&make, re, compile)) return Make_(&make), 0;
+	if(!Make(&make, p, compile)) return Make_(&make), 0;
 	do {
 		assert((make.status & (ERRNO | SYNTAX | DONE)) == 0), make.status = 0;
-		/* Main compiling loop. */
 		make.context(&make);
 		if(!make.status) continue;
-		/* Something happened. Retrieve nesting level. */
+		/* Some symbol happened. Retrieve nesting level. */
 		n = NestPoolPeek(&make.nests), assert(n);
 		/* Any literals always add an edge. */
-		if(make.c_from) make.status |= EDGE;
-		/* Add onto the graph. */
-		if(make.status & BRANCH && n->v2i == (size_t)-1) { /* Terminating v2. */
-			struct MachineVertexLink *const v2 = VertexPoolNew(&re->vs);
-			if(!v2) { make.status |= ERRNO, make.context = 0; break; }
-			MachineDigraphPutVertex(&re->graph, &v2->data);
-			n->v2i = VertexPoolIndex(&re->vs, v2);
-			/* Force it to make a, possibly empty, edge, sometimes. */
-			if(!(compile < make.c && make.c[-1] == ')')) make.status |= EDGE;
-			printf("branch %c\n", *make.c);
-		}
-		if(make.status & EDGE) { /* Intermediary v1. */
-			struct MachineEdge *edge;
-			struct MachineVertex *v0, *v1;
-			if(n->v2i != (size_t)-1) { /* v1 == v2 terminating. */
-				struct MachineVertexLink *const v1l
-					= VertexPoolGet(&re->vs, v1i = n->v2i);
-				assert(v1l);
-				v1 = &v1l->data;
-			} else { /* Make an intermediary vertex, v1. */
-				struct MachineVertexLink *const v1l = VertexPoolNew(&re->vs);
+		if(make.from) make.status |= EDGE;
+		/* New edge all the way to the local terminating state, {v1}. */
+		if(make.status & BRANCH) {
+			/* Create {v1} if it doesn't exist yet. */
+			if(n->v1i == (size_t)-1) {
+				struct MachineVertexLink *const v1l = VertexPoolNew(&p->vs);
 				if(!v1l) { make.status |= ERRNO, make.context = 0; break; }
-				v1 = &v1l->data;
-				v1i = VertexPoolIndex(&re->vs, v1l);
-				MachineDigraphPutVertex(&re->graph, v1);
+				MachineDigraphPutVertex(&p->graph, &v1l->data);
+				n->v1i = VertexPoolIndex(&p->vs, v1l);
+			}
+			/* Force it to make a, possibly empty, edge, sometimes. @fixme */
+			/*if(!(compile < make.cursor && make.cursor[-1] == ')'))*/
+			make.status |= EDGE;
+			printf("branch %c\n", *make.cursor);
+		} else if()
+		/*  */
+		if(make.status & EDGE) {
+			struct MachineEdge *edge;
+			struct MachineVertex *va, *vb;
+			/* Should use existing {vb == v1}. */
+			if(make.status & BRANCH && n->v1i != (size_t)-1) {
+				struct MachineVertexLink *const v1l
+					= VertexPoolGet(&p->vs, v1i = n->v1i);
+				assert(v1l);
+				vb = &v1l->data;
+			} else { /* Create a new vertex. */
+				struct MachineVertexLink *const vl = VertexPoolNew(&p->vs);
+				if(!vl) { make.status |= ERRNO, make.context = 0; break; }
+				vb = &vl->data;
+				MachineDigraphPutVertex(&p->graph, vb);
 			}
 			{ /* First vertex; after second because possibly invalidated. */
-				struct MachineVertexLink *const v0l
-					= VertexPoolGet(&re->vs, n->v0i);
-				assert(v0l);
-				v0 = &v0l->data;
+				struct MachineVertexLink *const val
+					= VertexPoolGet(&p->vs, n->vi);
+				assert(val);
+				va = &val->data;
 			}
+			if(make.status & BRANCH) n->vi = n->v0i; /* Reset cursor. */
+			else n->vi = VertexPoolIndex(&p->vs, vb);
 			/* The edge. */
-			if(make.c_from && make.c_from < make.c) {
-				struct Literals *const lit = Literals(&re->literals,
-					make.c_from, make.c - make.c_from);
+			if(make.from && make.from < make.cursor) {
+				struct Literals *const lit = Literals(&p->literals,
+					make.from, make.cursor - make.from);
 				if(!lit) { make.status |= ERRNO, make.context = 0; break; }
 				edge = &lit->edge.data;
 			} else {
-				struct MachineEdgeLink *emp = Empty(&re->empties);
+				struct MachineEdgeLink *emp = Empty(&p->empties);
 				if(!emp) { make.status |= ERRNO, make.context = 0; break; }
 				edge = &emp->data;
 			}
-			/* Reset the literal. */
-			make.c_from = 0;
-			MachineDigraphPutEdge(edge, v0, v1);
-			printf("edge %c\n", *make.c);
+			make.from = 0; /* Reset. */
+			if(make.status & BRANCH) n->vi = vb;
+			MachineDigraphPutEdge(edge, va, vb);
+			printf("edge %c\n", *make.cursor);
 		}
 		if(make.status & OPEN) { /* Open parenthesis. */
 			assert(!(make.status & CLOSE));
@@ -602,12 +584,19 @@ static int compile_re(struct Pattern *re, const char *const compile) {
 			printf("open\n");
 		}
 		if(make.status & CLOSE) { /* Close parenthesis. */
+			size_t v;
 			assert(!(make.status & OPEN));
-			NestPoolPop(&make.nests);
+			n = NestPoolPop(&make.nests), assert(n);
+			v = n->v1i;
 			/* Too many ')'. */
-			if(!NestPoolPeek(&make.nests))
+			if(!(n = NestPoolPeek(&make.nests)))
 				{ make.status |= SYNTAX, make.context = 0; break; }
 			printf("close\n");
+			/* @fixme Collect all the branches together.
+			 @fixme This doesn't work. Of course, it's thrown away. */
+			/*if(n->v2i != (size_t)-1) n->v0i = n->v2i, n->v2i = (size_t)-1;
+				make.vertex_index = n->v2i;*/
+			n->v1i = v;
 		}
 	} while(make.context && (make.c++, 1));
 	/* Verify the parentheses match. */
